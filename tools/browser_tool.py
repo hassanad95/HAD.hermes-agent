@@ -728,6 +728,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             session_info = _create_local_session(task_id)
         else:
             session_info = provider.create_session(task_id)
+            if session_info.get("cdp_url"):
+                # Some cloud providers (including Browser-Use v3) return an HTTP
+                # CDP discovery URL instead of a raw websocket endpoint.
+                session_info = dict(session_info)
+                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -862,11 +867,11 @@ def _run_browser_command(
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     
     # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
+    # Cloud mode: --cdp <websocket_url> connects to a remote cloud browser.
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
     if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
+        # Cloud mode — connect to a remote cloud browser via CDP
         # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
