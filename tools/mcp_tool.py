@@ -287,8 +287,14 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str,
             else:
                 result = await list_method(cursor=cursor)
         if cache_meta_out is not None and not items:
+            # mcp 2.x defaults ttl_ms=0 ("immediately stale") whether or not the server set it.
+            # Recording 0 expires every schema-cache entry on write and silently turns every lazy
+            # server eager (all stdio children spawn per process -> RAM blowup). Keep positive TTLs
+            # only; the live connect deregisters phantom cached tools anyway.
             for key, snake, camel in (("ttl_ms", "ttl_ms", "ttlMs"), ("cache_scope", "cache_scope", "cacheScope")):
                 hint = mcp_field(result, snake, camel)
+                if key == "ttl_ms" and not (isinstance(hint, (int, float)) and hint > 0):
+                    continue
                 if hint is not None:
                     cache_meta_out[key] = hint
         items.extend(getattr(result, items_attr, None) or [])

@@ -33,6 +33,14 @@ def test_entry_past_ttl_is_a_miss(monkeypatch):
     assert sc.get_cached_entry("srv", "fp") is None
 
 
+def test_zero_ttl_sdk_default_never_expires(monkeypatch):
+    # mcp 2.x defaults ttl_ms=0; treating it as "expired" made every lazy server eager.
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    real_time = time.time
+    monkeypatch.setattr(sc.time, "time", lambda: real_time() + 3600)
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
 def test_ttl_rewrite_advances_written_at():
     sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000)
     first = sc.get_cached_entry("srv", "fp")["written_at"]

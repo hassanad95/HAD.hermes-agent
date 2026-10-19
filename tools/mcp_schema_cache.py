@@ -67,7 +67,9 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
+    # ttl_ms <= 0 is the mcp 2.x SDK default, not a real server hint: treat as no TTL, or every
+    # lazy server goes eager on every process start.
+    expired = (isinstance(ttl_ms, (int, float)) and ttl_ms > 0 and isinstance(written_at, (int, float))
                and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
     return None if expired else entry
 
