@@ -192,9 +192,9 @@ class TestTurnTraceIsolation:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
+            def start_observation(self, **kw):
                 started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _RootCM()
+                return _RootCM().__enter__()
 
             def flush(self):
                 pass
@@ -296,60 +296,6 @@ class TestTurnTraceIsolation:
         # The survivors are the most-recently-updated turns (LRU eviction).
         surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
         assert surviving == list(range(42, 50))
-
-    def test_finish_trace_exits_root_context_manager(self, monkeypatch):
-        """_finish_trace must call root_ctx.__exit__(), not just root_span.end().
-
-        Regression for the "Exception ignored in: <generator>" traceback
-        on CLI exit.  The plugin enters the root observation's context
-        manager (start_as_current_observation(...).__enter__()) but must
-        also exit it; otherwise the generator is left suspended and is
-        only unwound when the GC collects it during interpreter teardown.
-        By then opentelemetry.trace.Span has been set to None, and the
-        generator's close() -> use_span.__exit__ -> isinstance(span, Span)
-        raises TypeError: isinstance() arg 2 must be a type.  Exiting the
-        context manager here unwinds the generator while modules are intact.
-        """
-        mod = self._fresh_plugin()
-        started: list = []
-        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
-        mod._TRACE_STATE.clear()
-
-        exited: list = []
-
-        class _S:
-            def update(self, **kw): pass
-            def end(self, **kw): pass
-            def set_trace_io(self, **kw): pass
-            def start_observation(self, **kw): return _S()
-
-        class _TrackingRootCM:
-            def __enter__(self):
-                return _S()
-            def __exit__(self, *exc):
-                exited.append(exc)
-                return False
-
-        class _TrackingClient:
-            def create_trace_id(self, seed=None):
-                return f"trace::{seed}"
-            def start_as_current_observation(self, **kw):
-                started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _TrackingRootCM()
-            def flush(self):
-                pass
-
-        monkeypatch.setattr(mod, "_get_langfuse", lambda: _TrackingClient())
-
-        self._run_turn(mod, session="sess-exit", turn_n=1, finalize=True)
-
-        assert exited, (
-            "_finish_trace did not call root_ctx.__exit__; the generator is "
-            "left suspended and will raise TypeError on GC at interpreter "
-            "teardown when opentelemetry.trace.Span is None"
-        )
-        assert len(exited) == 1
-        assert exited[0] == (None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -855,7 +801,7 @@ class TestModelAttribution:
 
         class _Client:
             def create_trace_id(self, seed=None): return "t"
-            def start_as_current_observation(self, **kw): return _RootCM()
+            def start_observation(self, **kw): return _RootCM().__enter__()
             def flush(self): pass
 
         return _Client()
@@ -1915,8 +1861,8 @@ class TestFinishTraceUsesUpdateTrace:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
-                return _RootCM()
+            def start_observation(self, **kw):
+                return _RootCM().__enter__()
 
             def flush(self):
                 pass
@@ -1951,7 +1897,8 @@ class TestFinishTraceUsesUpdateTrace:
         assert len(roots) == 1
         root = roots[0]
         assert root.ended is True
-        assert any("output" in u for u in root.trace_updates)
+        # SDK v4 removed update_trace: trace output mirrors the root observation.
+        assert root.trace_updates == []
         assert any("output" in u for u in root.updates)
         assert mod._TRACE_STATE == {}
 
@@ -1992,8 +1939,8 @@ class TestFinishTraceUsesUpdateTrace:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
-                return _RootCM()
+            def start_observation(self, **kw):
+                return _RootCM().__enter__()
 
             def flush(self):
                 pass
@@ -2259,3 +2206,106 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+class TestRootObservationCarriesTraceIO:
+    """Langfuse SDK v4 removed ``update_trace``; trace I/O mirrors the root observation
+    (https://langfuse.com/docs/observability/sdk/upgrade-path/python-v3-to-v4).
+    The plugin must not call the removed method, and must put input/output on the root."""
+
+    def test_v4_root_never_touches_update_trace_and_gets_io(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        roots: list = []
+
+        class _Span:
+            def __init__(self):
+                self.ended, self.updates, self.touched = False, [], []
+
+            def __getattr__(self, name):  # only reached for attributes the v4 span lacks
+                self.touched.append(name)
+                raise AttributeError(name)
+
+            def update(self, **kw):
+                self.updates.append(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __init__(self, kw):
+                self.span = _Span()
+                self.span.updates.append({"input": kw.get("input")})
+                roots.append(self.span)
+
+            def __enter__(self):
+                return self.span
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM(kw)
+
+            def start_observation(self, **kw):
+                return _RootCM(kw).span
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+        common = dict(task_id="t1", session_id="s1", model="m", provider="p", api_mode="chat",
+                      api_call_count=1, turn_id="turn-1")
+        mod.on_pre_llm_request(request_messages=[{"role": "user", "content": "hi"}], **common)
+        mod.on_post_llm_call(assistant_content_chars=12, assistant_tool_call_count=0,
+                             assistant_response="hello world!", **common)
+
+        root = roots[0]
+        assert "update_trace" not in root.touched
+        assert any(u.get("input") for u in root.updates)
+        assert any("output" in u for u in root.updates)
+        assert root.ended is True
+
+
+class TestRootSpanDoesNotBindOtelContext:
+    """Turns start and end on different threads/contexts (gateway). A root opened with
+    start_as_current_observation attaches an OTel context token that cannot be detached
+    elsewhere ("was created in a different Context"). start_observation does not attach
+    (https://langfuse.com/docs/observability/sdk/instrumentation#manual-observations)."""
+
+    def test_root_is_opened_without_attaching_context(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        calls: list = []
+
+        class _Span:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def start_observation(self, **kw): return _Span()
+
+        class _Client:
+            def create_trace_id(self, seed=None): return f"trace::{seed}"
+            def start_as_current_observation(self, **kw):
+                calls.append("attaching")
+                raise AssertionError("root must not attach an OTel context")
+            def start_observation(self, **kw):
+                calls.append("detached")
+                return _Span()
+            def flush(self): pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+        mod.on_pre_llm_request(task_id="t1", session_id="s1", model="m", provider="p", api_mode="chat",
+                               api_call_count=1, turn_id="turn-1",
+                               request_messages=[{"role": "user", "content": "hi"}])
+        assert calls == ["detached"]
