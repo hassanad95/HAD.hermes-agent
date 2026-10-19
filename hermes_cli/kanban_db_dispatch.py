@@ -1827,9 +1827,15 @@ def _system_memory_sample() -> dict:
     """
     try:
         from gateway.lifecycle_ledger import sample_memory
-        return sample_memory() or {}
+        sample = sample_memory() or {}
     except Exception:
-        return {}
+        sample = {}
+    if "mem_total_kib" not in sample and sys.platform == "darwin":
+        # /proc is Linux-only; without MemTotal macOS got no derived cap at all.
+        with contextlib.suppress(Exception):
+            out = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2).stdout
+            sample = {**sample, "mem_total_kib": int(out.strip()) // 1024}
+    return sample
 
 
 def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -> Optional[int]:

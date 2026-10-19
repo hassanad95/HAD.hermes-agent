@@ -184,6 +184,10 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        # Re-read the cap every tick (config load is mtime-cached), matching the
+        # standalone daemon loop: a `hermes config set kanban.max_in_progress N`
+        # must apply without a gateway restart, or a fan-out overruns the host.
+        kwargs["max_in_progress"] = _kbd().resolve_max_in_progress(_kbd().configured_max_in_progress())
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
