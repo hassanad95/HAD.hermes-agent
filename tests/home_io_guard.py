@@ -30,6 +30,14 @@ _INTERPRETER_PREFIXES = tuple({
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+# The default install checks the repo out inside the home, so pm's read-only probes of the
+# checkout's OWN install state land there: ``<checkout>/../manifest.json`` (_payload_manifest: "is
+# this a sealed payload?") and ``<checkout>/../installs/<key>/...`` (owning_home_root:
+# "which root owns this checkout?"). Reading those is not Hermes user state; writes stay
+# refused. CI checks out outside any home, so it never hit this.
+_CHECKOUT_PARENT = Path(__file__).resolve().parent.parent.parent
+_PAYLOAD_PROBE = _normcase(os.fspath(_CHECKOUT_PARENT / "manifest.json"))
+_INSTALLS_PROBE = _normcase(os.fspath(_CHECKOUT_PARENT / "installs"))
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -85,6 +93,8 @@ class HomeIOGuard:
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
+                return
+            if not destructive and (absolute == _PAYLOAD_PROBE or _within(absolute, _INSTALLS_PROBE)):
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
             # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is

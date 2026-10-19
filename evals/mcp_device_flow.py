@@ -138,7 +138,10 @@ def run_cli(repo, mode):
         argv = [sys.executable, "-m", "hermes_cli.main", "mcp", *command]
         if mode == "persistence":
             # Inject a filesystem write error after real registration/metadata writes.
+            # hermes_bootstrap first: it activates the dependency env (ruamel etc.) that
+            # tools.mcp_oauth imports; importing tools first fails on a non-payload checkout.
             argv = [sys.executable, "-c", '''
+import hermes_bootstrap
 from tools import mcp_oauth
 write = mcp_oauth._write_json
 def fail_token(path, data):
