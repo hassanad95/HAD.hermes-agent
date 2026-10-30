@@ -145,6 +145,10 @@ class TestForeignHarnessManifestDirs:
             ".cursor-plugin",
             ".devin-plugin",
             ".kimi-plugin",
+            # superpowers v7 added these; any future harness dir must not warn either
+            ".antigravity-plugin",
+            ".muse-plugin",
+            ".some-future-harness-plugin",
         ):
             harness_dir = sp / harness
             harness_dir.mkdir(parents=True)

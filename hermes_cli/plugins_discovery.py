@@ -153,7 +153,11 @@ def scan_directory(
         if child.name.startswith("__") and child.name.endswith("__"):
             logger.debug("Skipping dunder plugin path %s", child)
             continue
-        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
+        # Multi-harness repos keep adding `.<harness>-plugin/` dirs (superpowers v7: antigravity, muse), so match
+        # the convention, not a list; only `.hermes-plugin` is ours.
+        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS or (
+            child.name.startswith(".") and child.name.endswith("-plugin") and child.name != ".hermes-plugin"
+        ):
             logger.debug("Skipping %s (foreign-harness manifest convention)", child)
             continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
